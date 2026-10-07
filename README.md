@@ -1,6 +1,6 @@
 `# Geospatial File Measurement API
 
-*Author: Saidatta Dasari*
+*Author: Saidatta Dasari *
 
 A FastAPI backend that accepts a **Shapefile (`.zip`)** or **KML**, extracts every feature
 (index, geometry type, geometry, CRS, properties) and returns **area** for polygons and
