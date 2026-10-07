@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geo Measure</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--text:#1c2330;--muted:#6b7482;--line:#e3e6eb;--accent:#2563eb;--bad:#dc2626;--ok:#16a34a}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f1319;--card:#171c24;--text:#e8ebf0;--muted:#8d97a6;--line:#262d38;--accent:#5b8def;--bad:#f87171;--ok:#4ade80}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
+  main{max-width:960px;margin:0 auto;padding:32px 16px 64px}
+  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);margin:0 0 24px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+  .drop{display:block;border:2px dashed var(--line);border-radius:14px;padding:40px 16px;text-align:center;cursor:pointer;transition:.2s}
+  .drop:hover,.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  .drop b{display:block;font-size:16px;margin-bottom:4px} .drop span{color:var(--muted);font-size:13px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:13px;color:var(--muted)}
+  input[type=text]{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
+  .hidden{display:none!important}
+  .loader{display:flex;align-items:center;gap:12px;font-size:14px}
+  .spin{width:18px;height:18px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .err{color:var(--bad);font-size:14px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  .stat{background:var(--bg);border-radius:10px;padding:12px 14px}
+  .stat small{color:var(--muted);display:block;font-size:12px;margin-bottom:2px} .stat strong{font-size:18px}
+  #map{height:340px;border-radius:12px;margin-bottom:16px;border:1px solid var(--line)}
+  .tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .chip{border:1px solid var(--line);background:var(--card);color:var(--text);padding:5px 12px;border-radius:99px;font-size:13px;cursor:pointer}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .tablewrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  tr.click{cursor:pointer} tr.click:hover{background:var(--bg)}
+  .badge{padding:2px 8px;border-radius:99px;font-size:11px;background:var(--bg)}
+  .badge.OK{color:var(--ok)} .badge.ERROR{color:var(--bad)}
+  .fade{animation:f .35s ease} @keyframes f{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  button.link{background:none;border:0;color:var(--accent);cursor:pointer;font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Geo Measure</h1>
+  <p class="sub">Upload a KML or zipped Shapefile. Area and length are calculated for you.</p>
+
+  <section class="card" id="uploadCard">
+    <label class="drop" id="drop">
+      <b>Drop a file here or click to choose</b>
+      <span>.kml or .zip (Shapefile)</span>
+      <input type="file" id="file" accept=".kml,.zip" hidden>
+    </label>
+    <div class="row">
+      <label>Shapefile without .prj? CRS:
+        <input type="text" id="crs" placeholder="e.g. EPSG:4326" size="14"></label>
+    </div>
+  </section>
+
+  <section class="card hidden" id="loading">
+    <div class="loader"><div class="spin"></div><span id="loadText">Working…</span></div>
+  </section>
+
+  <section class="card hidden err" id="error"></section>
+
+  <div id="result" class="hidden fade">
+    <section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <strong id="fname"></strong>
+        <button class="link" id="again">Upload another</button>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+    <div id="map" class="hidden"></div>
+    <section class="card">
+      <div class="tools" id="filters"></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>Layer</th><th>Type</th><th>Area (m²)</th><th>Length (m)</th><th>Status</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => n == null ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: 2});
+let map, layerGroup, data = {measures: [], features: []}, filter = "All";
+
+function show(...ids){ ["uploadCard","loading","error","result"].forEach(i => $(i).classList.toggle("hidden", !ids.includes(i))); }
+function fail(msg){ $("error").textContent = msg; show("uploadCard","error"); }
+
+async function api(url, opts){
+  const r = await fetch(url, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok){
+    const d = body.detail;
+    throw new Error(typeof d === "string" ? d : (d && (d.error || d.message)) || `Request failed (${r.status})`);
+  }
+  return body;
+}
+async function fetchAll(url){            // pages through results so nothing is missed
+  let items = [], offset = 0, first;
+  while (true){
+    const p = await api(`${url}?limit=1000&offset=${offset}`);
+    first = first || p; items = items.concat(p.items); offset += 1000;
+    if (items.length >= p.total) return {...first, items};
+  }
+}
+
+async function handle(file){
+  if (!file) return;
+  show("loading"); $("loadText").textContent = "Processing " + file.name + "…";
+  try {
+    const fd = new FormData(); fd.append("file", file);
+    if ($("crs").value.trim() && file.name.toLowerCase().endsWith(".zip")) fd.append("default_crs", $("crs").value.trim());
+    const info = await api("/api/files/", {method: "POST", body: fd});
+    $("loadText").textContent = "Loading results…";
+    const [m, f] = await Promise.all([fetchAll(`/api/files/${info.id}/measurements/`), fetchAll(`/api/files/${info.id}/features/`)]);
+    data = {info, summary: m.summary, measures: m.items, features: f.items};
+    render();
+  } catch (e) { fail(e.message); }
+}
+
+function render(){
+  const {info, summary} = data;
+  $("fname").textContent = `${info.filename} · ${info.feature_count} features · ${info.crs || "unknown CRS"}`;
+  $("stats").innerHTML = [
+    ["Total area", fmt(summary.total_area_m2) + " m²"],
+    ["Total area", fmt(summary.total_area_m2 / 10000) + " ha"],
+    ["Total length", fmt(summary.total_length_m) + " m"],
+    ["Total length", fmt(summary.total_length_m / 1000) + " km"],
+  ].map(([k,v]) => `<div class="stat"><small>${k}</small><strong>${v}</strong></div>`).join("");
+
+  const types = ["All", ...new Set(data.measures.map(m => m.geometry_type))];
+  filter = "All";
+  $("filters").innerHTML = types.map(t => `<button class="chip ${t==="All"?"on":""}" data-t="${t}">${t}</button>`).join("");
+  $("filters").onclick = e => { if (e.target.dataset.t){ filter = e.target.dataset.t; renderFilters(); renderRows(); } };
+  renderRows(); drawMap(); show("result");
+}
+function renderFilters(){ document.querySelectorAll("#filters .chip").forEach(c => c.classList.toggle("on", c.dataset.t === filter)); }
+
+function renderRows(){
+  $("rows").innerHTML = data.measures.filter(m => filter === "All" || m.geometry_type === filter).map(m => `
+    <tr class="click" data-i="${m.feature_index}" title="${m.message || ""}">
+      <td>${m.feature_index}</td><td>${m.layer}</td><td>${m.geometry_type}</td>
+      <td>${fmt(m.area_m2)}</td><td>${fmt(m.length_m)}</td>
+      <td><span class="badge ${m.status}">${m.status.replace("_"," ")}</span></td></tr>`).join("");
+}
+$("rows").onclick = e => {
+  const tr = e.target.closest("tr"); if (!tr || !map) return;
+  const l = layerById[tr.dataset.i]; if (!l) return;
+  map.fitBounds(l.getBounds(), {maxZoom: 17, padding: [30,30]});
+  l.openPopup();
+};
+
+let layerById = {};
+function drawMap(){
+  const div = $("map"); layerById = {};
+  const drawable = data.info.crs === "EPSG:4326";   // geometry is stored in the file's own CRS
+  div.classList.toggle("hidden", !drawable);
+  if (!drawable) return;
+  if (!map){ map = L.map("map"); L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {attribution: "© OpenStreetMap"}).addTo(map); }
+  if (layerGroup) layerGroup.remove();
+  layerGroup = L.featureGroup().addTo(map);
+  data.features.forEach(f => {
+    if (!f.geometry) return;
+    const m = data.measures.find(x => x.feature_index === f.index);
+    const text = `<b>#${f.index} ${f.geometry_type}</b><br>` + (m.area_m2 != null ? fmt(m.area_m2)+" m²" : m.length_m != null ? fmt(m.length_m)+" m" : "");
+    layerById[f.index] = L.geoJSON(f.geometry).bindPopup(text).addTo(layerGroup);
+  });
+  setTimeout(() => { map.invalidateSize(); if (layerGroup.getLayers().length) map.fitBounds(layerGroup.getBounds(), {padding: [30,30]}); }, 50);
+}
+
+const drop = $("drop");
+$("file").onchange = e => handle(e.target.files[0]);
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => handle(e.dataTransfer.files[0]));
+$("again").onclick = () => { $("file").value = ""; show("uploadCard"); };
+</script>
+</body>
+</html>
